@@ -44,6 +44,10 @@ class ExporterHistory(BaseModel):
     key = models.TextField(blank=True)
     url = models.URLField(max_length=800, blank=True, null=True)
     token = models.CharField(max_length=255, default=generate_token, unique=True)
+    # Progress tracking fields
+    total_items = models.PositiveIntegerField(default=0)
+    processed_items = models.PositiveIntegerField(default=0)
+    progress_percentage = models.PositiveSmallIntegerField(default=0)
     initiated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
