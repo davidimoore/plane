@@ -185,6 +185,15 @@ def issue_export_task(
             )
         )
 
+        # Count total issues for progress tracking
+        total_issues = workspace_issues.count()
+
+        # Update exporter instance with total count
+        exporter_instance.total_items = total_issues
+        exporter_instance.processed_items = 0
+        exporter_instance.progress_percentage = 0
+        exporter_instance.save(update_fields=["total_items", "processed_items", "progress_percentage"])
+
         # Create exporter for the specified format
         try:
             exporter = DataExporter(IssueExportSerializer, format_type=provider)
@@ -196,19 +205,44 @@ def issue_export_task(
             exporter_instance.save(update_fields=["status", "reason"])
             return
 
+        # Determine if we should use chunked processing
+        use_chunked = total_issues > 5000
+        chunk_size = 1000  # Process 1000 issues at a time
+
         files = []
         if multiple:
             # Export each project separately with its own queryset
             for project_id in project_ids:
                 project_issues = workspace_issues.filter(project_id=project_id)
+                project_count = project_issues.count()
                 export_filename = f"{slug}-{project_id}"
-                filename, content = exporter.export(export_filename, project_issues)
+
+                if use_chunked and project_count > 5000:
+                    filename, content = exporter.export_chunked(export_filename, project_issues, chunk_size)
+                else:
+                    filename, content = exporter.export(export_filename, project_issues)
+
                 files.append((filename, content))
+
+                # Update progress
+                exporter_instance.processed_items += project_count
+                exporter_instance.progress_percentage = int((exporter_instance.processed_items / total_issues) * 100)
+                exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
         else:
             # Export all issues in a single file
             export_filename = f"{slug}-{workspace_id}"
-            filename, content = exporter.export(export_filename, workspace_issues)
+
+            if use_chunked:
+                filename, content = exporter.export_chunked(export_filename, workspace_issues, chunk_size)
+            else:
+                filename, content = exporter.export(export_filename, workspace_issues)
+
             files.append((filename, content))
+
+            # Update progress to 100% after processing
+            exporter_instance.processed_items = total_issues
+            exporter_instance.progress_percentage = 100
+            exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
 
         zip_buffer = create_zip_file(files)
         upload_to_s3(zip_buffer, workspace_id, token_id, slug)

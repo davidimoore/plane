@@ -51,6 +51,9 @@ class ExporterHistory(BaseModel):
     )
     filters = models.JSONField(blank=True, null=True)
     rich_filters = models.JSONField(default=dict, blank=True, null=True)
+    progress_percentage = models.IntegerField(default=0, help_text="Export progress as a percentage (0-100)")
+    total_items = models.IntegerField(default=0, help_text="Total number of items to export")
+    processed_items = models.IntegerField(default=0, help_text="Number of items processed so far")
 
     class Meta:
         verbose_name = "Exporter"
