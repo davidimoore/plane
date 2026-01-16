@@ -106,6 +106,45 @@ class DataExporter:
         """Get list of available export formats."""
         return list(cls.FORMATTERS.keys())
 
+    def _iter_chunks(self, queryset, chunk_size: int) -> Iterator[List[Dict]]:
+        """
+        Generator that yields serialized chunks of the queryset.
+
+        Args:
+            queryset: Django QuerySet to iterate
+            chunk_size: Number of records per chunk
+
+        Yields:
+            List of serialized dictionaries for each chunk
+        """
+        total_count = queryset.count()
+        for offset in range(0, total_count, chunk_size):
+            chunk = queryset[offset:offset + chunk_size]
+            serialized_chunk = self.serialize(chunk)
+            if serialized_chunk:
+                yield serialized_chunk
+
+    def _extract_fieldnames(self, serialized_data: List[Dict]) -> List[str]:
+        """
+        Extract unique field names from serialized data in order of appearance.
+
+        Args:
+            serialized_data: List of dictionaries from serializer
+
+        Returns:
+            List of unique field names
+        """
+        fieldnames = []
+        for row in serialized_data:
+            for key in row.keys():
+                if key not in fieldnames:
+                    fieldnames.append(key)
+        return fieldnames
+
+    def _build_filename(self, base_filename: str) -> str:
+        """Build full filename with extension based on format type."""
+        return f"{base_filename}.{self.formatter.extension}"
+
     def export_chunked(self, filename: str, queryset, chunk_size: int = 1000) -> Tuple[str, Union[str, bytes]]:
         """
         Export queryset in chunks to avoid memory issues with large datasets.
@@ -138,27 +177,14 @@ class DataExporter:
         writer = None
         fieldnames = None
 
-        # Process queryset in chunks
-        total_count = queryset.count()
-        for offset in range(0, total_count, chunk_size):
-            chunk = queryset[offset:offset + chunk_size]
-            serialized_chunk = self.serialize(chunk)
-
-            if not serialized_chunk:
-                continue
-
+        for serialized_chunk in self._iter_chunks(queryset, chunk_size):
             # Flatten data for CSV if needed
             if isinstance(self.formatter, CSVFormatter) and self.formatter.flatten:
                 serialized_chunk = [self.formatter._flatten(row) for row in serialized_chunk]
 
             # Initialize writer with fieldnames from first chunk
             if writer is None:
-                # Collect all unique field names
-                fieldnames = []
-                for row in serialized_chunk:
-                    for key in row.keys():
-                        if key not in fieldnames:
-                            fieldnames.append(key)
+                fieldnames = self._extract_fieldnames(serialized_chunk)
 
                 # Write header
                 if isinstance(self.formatter, CSVFormatter) and self.formatter.prettify_headers:
@@ -167,7 +193,7 @@ class DataExporter:
                     writer = csv.writer(output, delimiter=self.formatter.delimiter)
                     writer.writerow(pretty_headers)
                 else:
-                    writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=self.formatter.delimiter if isinstance(self.formatter, CSVFormatter) else ",")
+                    writer = csv.DictWriter(output, fieldnames=fieldnames, delimiter=self.formatter.delimiter)
                     writer.writeheader()
 
             # Write data rows
@@ -177,21 +203,15 @@ class DataExporter:
                 else:
                     writer.writerow(row)
 
-        full_filename = f"{filename}.{self.formatter.extension}"
-        return full_filename, output.getvalue()
+        return self._build_filename(filename), output.getvalue()
 
     def _export_chunked_json(self, filename: str, queryset, chunk_size: int) -> Tuple[str, str]:
         """Export to JSON in chunks."""
         output = StringIO()
         output.write("[")
-
-        total_count = queryset.count()
         first_item = True
 
-        for offset in range(0, total_count, chunk_size):
-            chunk = queryset[offset:offset + chunk_size]
-            serialized_chunk = self.serialize(chunk)
-
+        for serialized_chunk in self._iter_chunks(queryset, chunk_size):
             for item in serialized_chunk:
                 if not first_item:
                     output.write(",")
@@ -200,8 +220,7 @@ class DataExporter:
                 first_item = False
 
         output.write("\n]")
-        full_filename = f"{filename}.{self.formatter.extension}"
-        return full_filename, output.getvalue()
+        return self._build_filename(filename), output.getvalue()
 
     def _export_chunked_xlsx(self, filename: str, queryset, chunk_size: int) -> Tuple[str, bytes]:
         """Export to XLSX in chunks."""
@@ -209,23 +228,10 @@ class DataExporter:
         ws = wb.active
         fieldnames = None
 
-        total_count = queryset.count()
-
-        for offset in range(0, total_count, chunk_size):
-            chunk = queryset[offset:offset + chunk_size]
-            serialized_chunk = self.serialize(chunk)
-
-            if not serialized_chunk:
-                continue
-
+        for serialized_chunk in self._iter_chunks(queryset, chunk_size):
             # Initialize headers from first chunk
             if fieldnames is None:
-                # Collect all unique field names
-                fieldnames = []
-                for row in serialized_chunk:
-                    for key in row.keys():
-                        if key not in fieldnames:
-                            fieldnames.append(key)
+                fieldnames = self._extract_fieldnames(serialized_chunk)
 
                 # Write header row
                 if isinstance(self.formatter, XLSXFormatter) and self.formatter.prettify_headers:
@@ -249,5 +255,4 @@ class DataExporter:
         wb.save(output)
         output.seek(0)
 
-        full_filename = f"{filename}.{self.formatter.extension}"
-        return full_filename, output.getvalue()
+        return self._build_filename(filename), output.getvalue()
