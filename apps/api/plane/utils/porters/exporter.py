@@ -1,6 +1,3 @@
-<<<<<<< Updated upstream
-from typing import Dict, List, Union
-=======
 from typing import Dict, List, Union, Iterator, Tuple
 from io import StringIO, BytesIO
 import csv
@@ -8,7 +5,6 @@ import json
 import os
 import tempfile
 from openpyxl import Workbook
->>>>>>> Stashed changes
 from .formatters import BaseFormatter, CSVFormatter, JSONFormatter, XLSXFormatter
 
 
@@ -111,8 +107,6 @@ class DataExporter:
     def get_available_formats(cls) -> List[str]:
         """Get list of available export formats."""
         return list(cls.FORMATTERS.keys())
-<<<<<<< Updated upstream
-=======
 
     def _iter_chunks(self, queryset, chunk_size: int) -> Iterator[List[Dict]]:
         """
@@ -419,4 +413,3 @@ class DataExporter:
             if os.path.exists(temp_file.name):
                 os.unlink(temp_file.name)
             raise
->>>>>>> Stashed changes
