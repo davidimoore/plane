@@ -2,6 +2,8 @@ from typing import Dict, List, Union, Iterator, Tuple
 from io import StringIO, BytesIO
 import csv
 import json
+import os
+import tempfile
 from openpyxl import Workbook
 from .formatters import BaseFormatter, CSVFormatter, JSONFormatter, XLSXFormatter
 
@@ -256,3 +258,158 @@ class DataExporter:
         output.seek(0)
 
         return self._build_filename(filename), output.getvalue()
+
+    def export_chunked_to_file(
+        self, filename: str, queryset, chunk_size: int = 1000
+    ) -> Tuple[str, str]:
+        """
+        Export queryset in chunks directly to a temporary file on disk.
+        This method is memory-efficient for very large exports (>5000 items).
+
+        Args:
+            filename: Base filename (without extension)
+            queryset: Django QuerySet to export
+            chunk_size: Number of records to process at a time
+
+        Returns:
+            Tuple of (filename_with_extension, temp_file_path)
+            The caller is responsible for cleaning up the temp file.
+        """
+        if not self.formatter:
+            raise ValueError("format_type must be provided during initialization")
+
+        # Route to appropriate file-based export method
+        if self.format_type == "csv":
+            return self._export_chunked_csv_to_file(filename, queryset, chunk_size)
+        elif self.format_type == "json":
+            return self._export_chunked_json_to_file(filename, queryset, chunk_size)
+        elif self.format_type == "xlsx":
+            return self._export_chunked_xlsx_to_file(filename, queryset, chunk_size)
+        else:
+            raise ValueError(f"Unsupported format for file-based export: {self.format_type}")
+
+    def _export_chunked_csv_to_file(
+        self, filename: str, queryset, chunk_size: int
+    ) -> Tuple[str, str]:
+        """Export to CSV in chunks, writing directly to a temp file."""
+        temp_file = tempfile.NamedTemporaryFile(
+            mode='w', delete=False, suffix='.csv', encoding='utf-8', newline=''
+        )
+        try:
+            writer = None
+            fieldnames = None
+
+            for serialized_chunk in self._iter_chunks(queryset, chunk_size):
+                # Flatten data for CSV if needed
+                if isinstance(self.formatter, CSVFormatter) and self.formatter.flatten:
+                    serialized_chunk = [self.formatter._flatten(row) for row in serialized_chunk]
+
+                # Initialize writer with fieldnames from first chunk
+                if writer is None:
+                    fieldnames = self._extract_fieldnames(serialized_chunk)
+
+                    # Write header
+                    if isinstance(self.formatter, CSVFormatter) and self.formatter.prettify_headers:
+                        header_map = {key: self.formatter._prettify_header(key) for key in fieldnames}
+                        pretty_headers = [header_map[key] for key in fieldnames]
+                        writer = csv.writer(temp_file, delimiter=self.formatter.delimiter)
+                        writer.writerow(pretty_headers)
+                    else:
+                        writer = csv.DictWriter(
+                            temp_file, fieldnames=fieldnames, delimiter=self.formatter.delimiter
+                        )
+                        writer.writeheader()
+
+                # Write data rows
+                for row in serialized_chunk:
+                    if isinstance(self.formatter, CSVFormatter) and self.formatter.prettify_headers:
+                        writer.writerow([row.get(key, "") for key in fieldnames])
+                    else:
+                        writer.writerow(row)
+
+                # Flush periodically to free memory
+                temp_file.flush()
+
+            temp_file.close()
+            return self._build_filename(filename), temp_file.name
+
+        except Exception:
+            temp_file.close()
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+            raise
+
+    def _export_chunked_json_to_file(
+        self, filename: str, queryset, chunk_size: int
+    ) -> Tuple[str, str]:
+        """Export to JSON in chunks, writing directly to a temp file."""
+        temp_file = tempfile.NamedTemporaryFile(
+            mode='w', delete=False, suffix='.json', encoding='utf-8'
+        )
+        try:
+            temp_file.write("[")
+            first_item = True
+
+            for serialized_chunk in self._iter_chunks(queryset, chunk_size):
+                for item in serialized_chunk:
+                    if not first_item:
+                        temp_file.write(",")
+                    temp_file.write("\n  ")
+                    temp_file.write(json.dumps(item, indent=None, default=str))
+                    first_item = False
+
+                # Flush periodically to free memory
+                temp_file.flush()
+
+            temp_file.write("\n]")
+            temp_file.close()
+            return self._build_filename(filename), temp_file.name
+
+        except Exception:
+            temp_file.close()
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+            raise
+
+    def _export_chunked_xlsx_to_file(
+        self, filename: str, queryset, chunk_size: int
+    ) -> Tuple[str, str]:
+        """Export to XLSX in chunks, writing directly to a temp file."""
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+        temp_file.close()  # Close so openpyxl can write to it
+
+        try:
+            # Use write_only mode for memory efficiency
+            wb = Workbook(write_only=True)
+            ws = wb.create_sheet()
+            fieldnames = None
+
+            for serialized_chunk in self._iter_chunks(queryset, chunk_size):
+                # Initialize headers from first chunk
+                if fieldnames is None:
+                    fieldnames = self._extract_fieldnames(serialized_chunk)
+
+                    # Write header row
+                    if isinstance(self.formatter, XLSXFormatter) and self.formatter.prettify_headers:
+                        headers = [self.formatter._prettify_header(key) for key in fieldnames]
+                    else:
+                        headers = fieldnames
+                    ws.append(headers)
+
+                # Write data rows
+                for row in serialized_chunk:
+                    formatted_row = []
+                    for key in fieldnames:
+                        value = row.get(key, "")
+                        if isinstance(self.formatter, XLSXFormatter):
+                            value = self.formatter._format_value(value)
+                        formatted_row.append(value)
+                    ws.append(formatted_row)
+
+            wb.save(temp_file.name)
+            return self._build_filename(filename), temp_file.name
+
+        except Exception:
+            if os.path.exists(temp_file.name):
+                os.unlink(temp_file.name)
+            raise

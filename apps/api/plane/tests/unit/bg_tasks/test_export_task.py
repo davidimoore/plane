@@ -1,7 +1,15 @@
+import os
 import pytest
+import tempfile
 import tracemalloc
 from unittest.mock import patch, MagicMock, Mock
-from plane.bgtasks.export_task import issue_export_task, create_zip_file
+from plane.bgtasks.export_task import (
+    issue_export_task,
+    create_zip_file,
+    create_zip_file_from_paths,
+    LARGE_EXPORT_THRESHOLD,
+    CHUNK_SIZE,
+)
 from plane.db.models import ExporterHistory, Issue, Project, ProjectMember
 import io
 import zipfile
@@ -108,7 +116,7 @@ class TestExportTask:
 
     @pytest.mark.django_db
     @patch('plane.bgtasks.export_task.upload_to_s3')
-    def test_export_task_uses_chunked_for_large_exports(
+    def test_export_task_uses_file_based_chunked_for_large_exports(
         self,
         mock_upload,
         workspace,
@@ -116,7 +124,7 @@ class TestExportTask:
         exporter_history,
         create_user
     ):
-        """Test that export task uses chunked processing for >5000 issues"""
+        """Test that export task uses file-based chunked processing for >5000 issues"""
         # Create 6000 mock issues
         for i in range(6000):
             Issue.objects.create(
@@ -125,8 +133,16 @@ class TestExportTask:
                 project=project,
             )
 
-        with patch('plane.bgtasks.export_task.DataExporter.export_chunked') as mock_chunked:
-            mock_chunked.return_value = ('test.csv', 'test,content')
+        with patch.object(
+            __import__('plane.utils.porters.exporter', fromlist=['DataExporter']).DataExporter,
+            'export_chunked_to_file'
+        ) as mock_chunked_to_file:
+            # Return a tuple of (filename, temp_file_path)
+            import tempfile
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+            temp_file.write(b'test,content')
+            temp_file.close()
+            mock_chunked_to_file.return_value = ('test.csv', temp_file.name)
 
             # Run the export task
             issue_export_task(
@@ -138,8 +154,8 @@ class TestExportTask:
                 slug='test-export'
             )
 
-            # Verify that export_chunked was called
-            assert mock_chunked.called
+            # Verify that export_chunked_to_file was called (file-based processing)
+            assert mock_chunked_to_file.called
 
         # Reload exporter history
         exporter_history.refresh_from_db()
@@ -340,3 +356,110 @@ class TestExportTask:
             exporter.refresh_from_db()
             assert exporter.total_items == 100, f"Failed for format {fmt}"
             assert exporter.processed_items == 100, f"Failed for format {fmt}"
+
+    def test_create_zip_file_from_paths_with_file_content(self):
+        """Test creating a ZIP from file paths"""
+        # Create temp files
+        temp1 = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        temp1.write(b'id,name\n1,test')
+        temp1.close()
+
+        temp2 = tempfile.NamedTemporaryFile(delete=False, suffix='.json')
+        temp2.write(b'{"key": "value"}')
+        temp2.close()
+
+        try:
+            # Create ZIP from file paths
+            file_entries = [
+                ('data.csv', temp1.name, True),
+                ('meta.json', temp2.name, True),
+                ('inline.txt', 'inline content', False),
+            ]
+
+            zip_path = create_zip_file_from_paths(file_entries)
+
+            # Verify ZIP was created
+            assert os.path.exists(zip_path)
+
+            # Verify contents
+            with zipfile.ZipFile(zip_path, 'r') as zipf:
+                assert len(zipf.namelist()) == 3
+                assert zipf.read('data.csv') == b'id,name\n1,test'
+                assert zipf.read('meta.json') == b'{"key": "value"}'
+                assert zipf.read('inline.txt') == b'inline content'
+
+            # Clean up
+            os.unlink(zip_path)
+
+        finally:
+            # Source temp files should be cleaned up by the function
+            # but clean up if they still exist
+            for path in [temp1.name, temp2.name]:
+                if os.path.exists(path):
+                    os.unlink(path)
+
+    def test_create_zip_file_from_paths_cleans_up_source_files(self):
+        """Test that source temp files are cleaned up after ZIP creation"""
+        temp1 = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+        temp1.write(b'content')
+        temp1.close()
+
+        file_entries = [('data.csv', temp1.name, True)]
+        zip_path = create_zip_file_from_paths(file_entries)
+
+        try:
+            # Source file should be cleaned up
+            assert not os.path.exists(temp1.name), "Source temp file should be deleted"
+            # ZIP file should exist
+            assert os.path.exists(zip_path)
+        finally:
+            if os.path.exists(zip_path):
+                os.unlink(zip_path)
+
+    def test_constants_are_set_correctly(self):
+        """Test that export constants are set to expected values"""
+        assert LARGE_EXPORT_THRESHOLD == 5000
+        assert CHUNK_SIZE == 1000
+        assert CHUNK_SIZE < LARGE_EXPORT_THRESHOLD
+
+
+@pytest.mark.unit
+class TestExportMemoryEfficiency:
+    """Tests specifically for memory efficiency of export operations"""
+
+    def test_file_based_zip_memory_usage(self):
+        """Test that file-based ZIP creation keeps memory usage low"""
+        tracemalloc.start()
+
+        # Create temp files with ~5MB content each
+        temp_files = []
+        file_entries = []
+        for i in range(5):
+            temp = tempfile.NamedTemporaryFile(delete=False, suffix='.csv')
+            content = f"row,{i}\n" * 500000  # ~5MB per file
+            temp.write(content.encode())
+            temp.close()
+            temp_files.append(temp.name)
+            file_entries.append((f'file_{i}.csv', temp.name, True))
+
+        zip_path = create_zip_file_from_paths(file_entries)
+
+        current, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+
+        peak_mb = peak / 1024 / 1024
+
+        try:
+            # Verify ZIP was created
+            assert os.path.exists(zip_path)
+
+            # Memory should stay under 512MB even with large files
+            # The actual limit may vary, but file-based approach should be much lower
+            assert peak_mb < 512, f"Peak memory usage was {peak_mb:.2f} MB, expected < 512 MB"
+
+        finally:
+            if os.path.exists(zip_path):
+                os.unlink(zip_path)
+            for path in temp_files:
+                if os.path.exists(path):
+                    os.unlink(path)
