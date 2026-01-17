@@ -3,7 +3,11 @@ import io
 import os
 import tempfile
 import zipfile
+<<<<<<< Updated upstream
 from typing import List, Iterator
+=======
+from typing import List, Union
+>>>>>>> Stashed changes
 import boto3
 from botocore.client import Config
 from uuid import UUID
@@ -22,9 +26,15 @@ from plane.utils.exception_logger import log_exception
 from plane.utils.porters.exporter import DataExporter
 from plane.utils.porters.serializers.issue import IssueExportSerializer
 
+<<<<<<< Updated upstream
 # Constants for chunked processing
 CHUNK_SIZE = 1000
 LARGE_EXPORT_THRESHOLD = 5000
+=======
+# Constants
+LARGE_EXPORT_THRESHOLD = 5000
+CHUNK_SIZE = 1000
+>>>>>>> Stashed changes
 
 
 def create_zip_file(files: List[tuple[str, str | bytes]]) -> io.BytesIO:
@@ -41,6 +51,7 @@ def create_zip_file(files: List[tuple[str, str | bytes]]) -> io.BytesIO:
     return zip_buffer
 
 
+<<<<<<< Updated upstream
 def create_zip_file_streamed(files: List[tuple[str, str | bytes]]) -> str:
     """
     Create a ZIP file using a temporary file on disk to avoid memory issues.
@@ -181,11 +192,71 @@ def export_issues_standard(
 
 # TODO: Change the upload_to_s3 function to use the new storage method with entry in file asset table
 def upload_to_s3(zip_file, workspace_id: UUID, token_id: str, slug: str, is_file_path: bool = False) -> None:
+=======
+def create_zip_file_from_paths(
+    file_entries: List[tuple[str, Union[str, bytes], bool]]
+) -> str:
+    """
+    Create a ZIP file on disk from file paths and/or content.
+
+    Args:
+        file_entries: List of tuples (archive_name, content_or_path, is_file_path)
+            - archive_name: Name in the ZIP archive
+            - content_or_path: Either file content (str/bytes) or path to temp file
+            - is_file_path: True if content_or_path is a file path
+
+    Returns:
+        Path to the created ZIP file. Caller is responsible for cleanup.
+    """
+    temp_zip = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+    temp_zip.close()
+
+    temp_files_to_cleanup = []
+
+    try:
+        with zipfile.ZipFile(temp_zip.name, "w", zipfile.ZIP_DEFLATED) as zipf:
+            for archive_name, content_or_path, is_file_path in file_entries:
+                if is_file_path:
+                    # Add file from disk path
+                    zipf.write(content_or_path, archive_name)
+                    temp_files_to_cleanup.append(content_or_path)
+                else:
+                    # Add content directly
+                    zipf.writestr(archive_name, content_or_path)
+
+        return temp_zip.name
+
+    except Exception:
+        # Clean up ZIP file on error
+        if os.path.exists(temp_zip.name):
+            os.unlink(temp_zip.name)
+        raise
+
+    finally:
+        # Clean up source temp files
+        for temp_path in temp_files_to_cleanup:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+
+
+# TODO: Change the upload_to_s3 function to use the new storage method with entry in file asset table
+def upload_to_s3(
+    zip_file: Union[io.BytesIO, str],
+    workspace_id: UUID,
+    token_id: str,
+    slug: str,
+    is_file_path: bool = False
+) -> None:
+>>>>>>> Stashed changes
     """
     Upload a ZIP file to S3 and generate a presigned URL.
 
     Args:
+<<<<<<< Updated upstream
         zip_file: Either a BytesIO object or a file path string
+=======
+        zip_file: Either a BytesIO object or a path to a ZIP file on disk
+>>>>>>> Stashed changes
         workspace_id: The workspace UUID
         token_id: The export token
         slug: The workspace slug
@@ -268,7 +339,11 @@ def upload_to_s3(zip_file, workspace_id: UUID, token_id: str, slug: str, is_file
     finally:
         if is_file_path:
             file_obj.close()
+<<<<<<< Updated upstream
             # Clean up temp file
+=======
+            # Clean up the temp ZIP file
+>>>>>>> Stashed changes
             if os.path.exists(zip_file):
                 os.unlink(zip_file)
 
@@ -301,8 +376,13 @@ def issue_export_task(
     token_id (str): The export object token id.
     multiple (bool): Whether to export the issues to multiple files per project.
 
+<<<<<<< Updated upstream
     For exports with more than LARGE_EXPORT_THRESHOLD issues, uses chunked
     processing to keep memory usage low.
+=======
+    For exports with more than LARGE_EXPORT_THRESHOLD issues, uses file-based
+    chunked processing to keep memory usage low (<512MB).
+>>>>>>> Stashed changes
     """
     try:
         exporter_instance = ExporterHistory.objects.get(token=token_id)
@@ -335,6 +415,7 @@ def issue_export_task(
             exporter_instance.save(update_fields=["status", "reason"])
             return
 
+<<<<<<< Updated upstream
         files = []
         processed_total = 0
 
@@ -377,6 +458,23 @@ def issue_export_task(
             # Use memory-based ZIP for small exports
             zip_buffer = create_zip_file(files)
             upload_to_s3(zip_buffer, workspace_id, token_id, slug, is_file_path=False)
+=======
+        # Determine if we should use file-based chunked processing
+        use_file_based = total_issues > LARGE_EXPORT_THRESHOLD
+
+        if use_file_based:
+            # Large export: use file-based processing to keep memory low
+            _process_large_export(
+                exporter, exporter_instance, workspace_issues, project_ids,
+                multiple, slug, workspace_id, token_id, total_issues
+            )
+        else:
+            # Small export: use in-memory processing
+            _process_small_export(
+                exporter, exporter_instance, workspace_issues, project_ids,
+                multiple, slug, workspace_id, token_id, total_issues
+            )
+>>>>>>> Stashed changes
 
     except Exception as e:
         exporter_instance = ExporterHistory.objects.get(token=token_id)
@@ -385,3 +483,122 @@ def issue_export_task(
         exporter_instance.save(update_fields=["status", "reason"])
         log_exception(e)
         return
+
+
+def _process_small_export(
+    exporter: DataExporter,
+    exporter_instance: ExporterHistory,
+    workspace_issues,
+    project_ids: List[str],
+    multiple: bool,
+    slug: str,
+    workspace_id: UUID,
+    token_id: str,
+    total_issues: int,
+) -> None:
+    """
+    Process a small export (<= LARGE_EXPORT_THRESHOLD issues) in memory.
+    """
+    files = []
+
+    if multiple:
+        # Export each project separately
+        for project_id in project_ids:
+            project_issues = workspace_issues.filter(project_id=project_id)
+            project_count = project_issues.count()
+            export_filename = f"{slug}-{project_id}"
+
+            filename, content = exporter.export(export_filename, project_issues)
+            files.append((filename, content))
+
+            # Update progress
+            exporter_instance.processed_items += project_count
+            if total_issues > 0:
+                exporter_instance.progress_percentage = int(
+                    (exporter_instance.processed_items / total_issues) * 100
+                )
+            exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
+    else:
+        # Export all issues in a single file
+        export_filename = f"{slug}-{workspace_id}"
+        filename, content = exporter.export(export_filename, workspace_issues)
+        files.append((filename, content))
+
+        # Update progress to 100%
+        exporter_instance.processed_items = total_issues
+        exporter_instance.progress_percentage = 100
+        exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
+
+    # Create ZIP in memory and upload
+    zip_buffer = create_zip_file(files)
+    upload_to_s3(zip_buffer, workspace_id, token_id, slug, is_file_path=False)
+
+
+def _process_large_export(
+    exporter: DataExporter,
+    exporter_instance: ExporterHistory,
+    workspace_issues,
+    project_ids: List[str],
+    multiple: bool,
+    slug: str,
+    workspace_id: UUID,
+    token_id: str,
+    total_issues: int,
+) -> None:
+    """
+    Process a large export (> LARGE_EXPORT_THRESHOLD issues) using file-based
+    chunked processing to keep memory usage under 512MB.
+    """
+    # file_entries: list of (archive_name, content_or_path, is_file_path)
+    file_entries = []
+    temp_files = []
+
+    try:
+        if multiple:
+            # Export each project separately
+            for project_id in project_ids:
+                project_issues = workspace_issues.filter(project_id=project_id)
+                project_count = project_issues.count()
+                export_filename = f"{slug}-{project_id}"
+
+                # Use file-based export for this project
+                filename, temp_path = exporter.export_chunked_to_file(
+                    export_filename, project_issues, CHUNK_SIZE
+                )
+                file_entries.append((filename, temp_path, True))
+                temp_files.append(temp_path)
+
+                # Update progress
+                exporter_instance.processed_items += project_count
+                if total_issues > 0:
+                    exporter_instance.progress_percentage = int(
+                        (exporter_instance.processed_items / total_issues) * 100
+                    )
+                exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
+        else:
+            # Export all issues in a single file
+            export_filename = f"{slug}-{workspace_id}"
+
+            filename, temp_path = exporter.export_chunked_to_file(
+                export_filename, workspace_issues, CHUNK_SIZE
+            )
+            file_entries.append((filename, temp_path, True))
+            temp_files.append(temp_path)
+
+            # Update progress to 100%
+            exporter_instance.processed_items = total_issues
+            exporter_instance.progress_percentage = 100
+            exporter_instance.save(update_fields=["processed_items", "progress_percentage"])
+
+        # Create ZIP from temp files (this also cleans up source temp files)
+        zip_path = create_zip_file_from_paths(file_entries)
+
+        # Upload ZIP and clean it up
+        upload_to_s3(zip_path, workspace_id, token_id, slug, is_file_path=True)
+
+    except Exception:
+        # Clean up any remaining temp files on error
+        for temp_path in temp_files:
+            if os.path.exists(temp_path):
+                os.unlink(temp_path)
+        raise
