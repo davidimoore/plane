@@ -171,6 +171,14 @@ from .page.base import (
 )
 from .page.version import PageVersionEndpoint
 
+from .conversation.base import ConversationEndpoint
+from .conversation.version import ConversationVersionEndpoint
+from .conversation.share import (
+    ConversationShareEndpoint,
+    PublicConversationEndpoint,
+    ConversationShareTokenEndpoint,
+)
+
 from .search.base import GlobalSearchEndpoint, SearchEndpoint
 from .search.issue import IssueSearchEndpoint
 

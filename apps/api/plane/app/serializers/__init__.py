@@ -129,3 +129,17 @@ from .draft import (
     DraftIssueSerializer,
     DraftIssueDetailSerializer,
 )
+
+from .conversation import (
+    ConversationSerializer,
+    ConversationDetailSerializer,
+    ConversationCreateSerializer,
+    ConversationUpdateSerializer,
+    ConversationVersionSerializer,
+    ConversationVersionDetailSerializer,
+    ConversationVersionCreateSerializer,
+    ConversationShareSerializer,
+    ConversationShareCreateSerializer,
+    PublicConversationSerializer,
+    PublicConversationVersionSerializer,
+)
