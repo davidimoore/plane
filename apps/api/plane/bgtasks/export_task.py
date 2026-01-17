@@ -26,6 +26,56 @@ from plane.utils.porters.serializers.issue import IssueExportSerializer
 LARGE_EXPORT_THRESHOLD = 5000
 CHUNK_SIZE = 1000
 
+
+def build_issue_queryset(workspace_id: UUID, project_ids: List[str], initiated_by_id: UUID):
+    """
+    Build the optimized queryset for fetching issues with all related data.
+    """
+    return (
+        Issue.objects.filter(
+            workspace__id=workspace_id,
+            project_id__in=project_ids,
+            project__project_projectmember__member=initiated_by_id,
+            project__project_projectmember__is_active=True,
+            project__archived_at__isnull=True,
+        )
+        .select_related(
+            "project",
+            "workspace",
+            "state",
+            "created_by",
+            "estimate_point",
+        )
+        .prefetch_related(
+            "labels",
+            "issue_cycle__cycle",
+            "issue_module__module",
+            "assignees",
+            "issue_link",
+            Prefetch(
+                "issue_subscribers",
+                queryset=IssueSubscriber.objects.select_related("subscriber"),
+            ),
+            Prefetch(
+                "issue_comments",
+                queryset=IssueComment.objects.select_related("actor").order_by("created_at"),
+            ),
+            Prefetch(
+                "issue_relation",
+                queryset=IssueRelation.objects.select_related("related_issue", "related_issue__project"),
+            ),
+            Prefetch(
+                "issue_related",
+                queryset=IssueRelation.objects.select_related("issue", "issue__project"),
+            ),
+            Prefetch(
+                "parent",
+                queryset=Issue.objects.select_related("type", "project"),
+            ),
+        )
+    )
+
+
 def create_zip_file(files: List[tuple[str, str | bytes]]) -> io.BytesIO:
     """
     Create a ZIP file from the provided files in memory.
